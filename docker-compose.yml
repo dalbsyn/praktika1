@@ -1,0 +1,14 @@
+name: praktika1
+
+# DB_PASSWORD, DB_DATA_LOCATION - стягиваются из .env файла
+services:
+  postgres:
+    ports: 5432:5432
+    environment: POSTGRES_PASSWORD=${DB_PASSWORD}
+    image: "docker.io/postgres:latest"
+    volumes: ${DB_DATA_LOCATION}:/var/lib/postgresql/data
+    external: true
+        
+  redis:
+    image: "docker.io/redis:latest"
+    restart: always
