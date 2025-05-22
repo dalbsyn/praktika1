@@ -9,6 +9,8 @@ sqlalchemy = "*"
 alembic = "*"
 marshmallow = "*"
 redis = "*"
+psycopg = "*"
+python-dotenv = "*"
 
 [dev-packages]
 
