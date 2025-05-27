@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import TIMESTAMP
-from base import Base
+from core.models.base import Base
 
 class Clients(Base):
     first_name: Mapped[str] = mapped_column(nullable = False)
