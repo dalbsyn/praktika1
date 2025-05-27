@@ -9,8 +9,8 @@ sqlalchemy = "*"
 alembic = "*"
 marshmallow = "*"
 redis = "*"
-psycopg = "*"
 python-dotenv = "*"
+psycopg = {extras = ["binary"], version = "*"}
 
 [dev-packages]
 
