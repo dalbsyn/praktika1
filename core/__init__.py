@@ -14,8 +14,8 @@ __all__ = (
     'Transactions'
 )
 
-from core.models.base import Base
-from core.models.clients import Clients
-from core.models.accounts import Accounts
-from core.models.cards import Cards
-from core.models.transactions import Transactions
+from core.database.base import Base
+from core.database.clients import Clients
+from core.database.accounts import Accounts
+from core.database.cards import Cards
+from core.database.transactions import Transactions

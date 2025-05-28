@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy import TIMESTAMP, DATE, TEXT, VARCHAR
-from core.models.base import Base
+from core.database.base import Base
 
 
 class Clients(Base):
