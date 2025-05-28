@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy import TIMESTAMP, VARCHAR, UUID, DECIMAL, ForeignKey, FLOAT, TEXT
+from sqlalchemy import TIMESTAMP, VARCHAR, UUID, DECIMAL, ForeignKey, TEXT
 from core.models.base import Base
 
 class Transactions(Base):
