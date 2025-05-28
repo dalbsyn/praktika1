@@ -6,7 +6,6 @@ from sqlalchemy import pool
 from alembic import context
 
 from core.models.base import Base
-from core.models.clients import Clients
 
 from core.settings import Settings
 
