@@ -9,9 +9,11 @@ __all__
 __all__ = (
     'Base',
     'Clients',
-    'Accounts'
+    'Accounts',
+    'Cards'
 )
 
 from core.models.base import Base
 from core.models.clients import Clients
 from core.models.accounts import Accounts
+from core.models.cards import Cards
