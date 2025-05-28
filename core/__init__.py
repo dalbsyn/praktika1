@@ -10,10 +10,12 @@ __all__ = (
     'Base',
     'Clients',
     'Accounts',
-    'Cards'
+    'Cards',
+    'Transactions'
 )
 
 from core.models.base import Base
 from core.models.clients import Clients
 from core.models.accounts import Accounts
 from core.models.cards import Cards
+from core.models.transactions import Transactions
