@@ -10,4 +10,3 @@ class Clients(Base):
     date_of_birth: Mapped[str] = mapped_column(DATE)
     address: Mapped[str] = mapped_column(TEXT)
     phone_number: Mapped[str] = mapped_column(VARCHAR(20))
-    registration_date: Mapped[str] = mapped_column(TIMESTAMP)
