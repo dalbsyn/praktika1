@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy import TIMESTAMP, VARCHAR, ForeignKey, DATE
-from core.database.base import Base
+from app.database.base import Base
 
 
 class Cards(Base):

@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy import TIMESTAMP, VARCHAR, UUID, DECIMAL, ForeignKey, TEXT
-from core.database.base import Base
+from app.database.base import Base
 
 class Transactions(Base):
     transaction_id: Mapped[str] = mapped_column(UUID, unique=True)
