@@ -19,3 +19,5 @@ class Settings:
     '''
     
     url = 'postgresql+psycopg://{0}:{1}@{2}:{3}/{4}'.format(db_user, db_password, db_host, db_port, db_name)
+
+app_settings = Settings()
