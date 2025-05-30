@@ -9,3 +9,4 @@ class Accounts(Base):
     account_type: Mapped[str] = mapped_column(VARCHAR(64), nullable=False)
     balance: Mapped[float] = mapped_column(DECIMAL(15, 2), nullable=False, default=0.00)
     currency: Mapped[str] = mapped_column(VARCHAR(3), nullable=False)
+    held_balance: Mapped[float] = mapped_column(DECIMAL(15, 2), nullable=False, default=0.00)
