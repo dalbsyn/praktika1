@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from app.db_session import get_db
 from app.database.accounts import Accounts
 from app.database.transactions import Transactions
+import uuid
 
 def get_welcome_message():
     return "test"
@@ -342,6 +343,119 @@ def process_cancel_hold(operation_id: str):
             "amount": amount_to_return,
             "status": hold_transaction.transaction_status,
             "message": "Удержание средств успешно отменено."
+        }
+
+    except Exception as e:
+        db.rollback()
+        raise e
+    finally:
+        db.close()
+
+def process_refund_funds(operation_id: str, description: str = "Возврат средств"):
+    '''
+    Реализация возврата средств на счет
+
+    Входные аргументы:
+    - `operation_id` - идентификатор операции, полученная из URL;
+    - `description` - описание транзакции, по умолчанию установленная в "Возврат средств".
+
+    Выходные данные - JSON-ответ:
+
+    ```
+    {
+        "operation_id": "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX",
+        "refund_transaction_id": "YYYYYYYY-YYYY-YYYY-YYYY-YYYYYYYYYYYY",
+        "account_id": "ZZZZZZZZ-ZZZZ-ZZZZ-ZZZZ-ZZZZZZZZZZZZ",
+        "amount": 100,
+        "status": "COMPLETED",
+        "message": "Средства успешно возвращены."
+    }
+    ```
+
+    Ошибки:
+    - `ValueError`:
+        - счета не существует;
+        - уже возвращено.
+    '''
+
+    db: Session = next(get_db())
+    try:
+        '''
+        Поиск исходной транзакции списания (CHARGE) по operation_id
+        Ищем оригинальную транзакцию (HOLD), которая была COMPLETED (списана)
+        '''
+        original_charge_transaction = db.query(Transactions).filter(
+            Transactions.transaction_id == operation_id,
+            Transactions.transaction_type == 'HOLD',
+            Transactions.transaction_status == 'COMPLETED'
+        ).first()
+
+        if not original_charge_transaction:
+            raise ValueError(f"Исходная транзакция списания (CHARGE) с ID '{operation_id}' не найдена или не имеет статус 'COMPLETED'.")
+
+        '''
+        Проверка, что по этой исходной транзакции ещё не было возврата
+        Для этого используется поле original_transaction_id для проверки
+        '''
+        existing_refund_transaction = db.query(Transactions).filter(
+            Transactions.original_transaction_id == original_charge_transaction.transaction_id,
+            Transactions.transaction_type == 'REFUND'
+        ).first()
+
+        if existing_refund_transaction:
+            return {
+                "operation_id": original_charge_transaction.transaction_id,
+                "refund_transaction_id": existing_refund_transaction.transaction_id,
+                "account_id": existing_refund_transaction.account_id,
+                "amount": float(existing_refund_transaction.amount),
+                "status": existing_refund_transaction.transaction_status,
+                "message": "Средства по данной операции уже были возвращены."
+            }
+
+        account = db.query(Accounts).filter(
+            Accounts.id == original_charge_transaction.account_id
+        ).first()
+
+        if not account:
+            raise ValueError(f"Счет с ID '{original_charge_transaction.account_id}' для исходной транзакции '{operation_id}' не найден.")
+
+        amount_to_refund = float(original_charge_transaction.amount)
+
+        '''
+        Создание новой записи о транзакции возврата
+
+        Во время выполнения транзакции генерируется UUID-транзакции возврата средств.
+        
+        Согласно таблице, также имеется ссылка на исходную транзакцию, откуда выполнялся возврат средств.
+        '''
+        refund_transaction_id = str(uuid.uuid4())
+        new_refund_transaction = Transactions(
+            transaction_id=refund_transaction_id,
+            account_id=account.id,
+            transaction_type='REFUND',
+            transaction_date=datetime.now(timezone.utc),
+            amount=amount_to_refund,
+            description=f"{description} по операции {operation_id}",
+            transaction_status='COMPLETED',
+            original_transaction_id=original_charge_transaction.transaction_id
+        )
+        db.add(new_refund_transaction)
+
+        '''
+        Обновление баланса счета, то есть прибавка к текущему баланса значения, с которого ранее был сделан возврат.
+        '''
+        account.balance = float(account.balance) + amount_to_refund
+
+        db.commit()
+        db.refresh(new_refund_transaction)
+
+        return {
+            "operation_id": original_charge_transaction.transaction_id,
+            "refund_transaction_id": new_refund_transaction.transaction_id,
+            "account_id": account.account_number,
+            "amount": float(new_refund_transaction.amount),
+            "status": new_refund_transaction.transaction_status,
+            "message": "Средства успешно возвращены."
         }
 
     except Exception as e:
