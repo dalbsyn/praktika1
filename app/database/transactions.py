@@ -11,3 +11,4 @@ class Transactions(Base):
     amount: Mapped[float] = mapped_column(DECIMAL(15, 2), nullable=False)
     description: Mapped[str] = mapped_column(TEXT)
     transaction_status: Mapped[str] = mapped_column(VARCHAR(64), nullable=False)
+    original_transaction_id: Mapped[str] = mapped_column(UUID, nullable=True, default=None)
