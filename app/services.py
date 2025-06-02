@@ -241,3 +241,111 @@ def process_charge_funds(operation_id: str):
         raise e
     finally:
         db.close()
+
+def process_cancel_hold(operation_id: str):
+    '''
+    Реализация отмены удерживаемых средств.
+
+    Входные аргументы:
+    - `operation_id` - идентификатор операции, которую надо отменить.
+
+    Выходные данные - JSON-ответ:
+    ```
+    {
+        "operation_id": "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX",
+        "account_id": "YYYYYYYY-YYYY-YYYY-YYYY-YYYYYYYYYYYY",
+        "amount": amount_to_return,
+        "status": "CANCELLED",
+        "message": "Удержание средств успешно отменено."
+    }
+    ```
+
+    Ошибки:
+    - ValueError:
+        - транзакции не существует;
+        - неверный внутренний статус транзакции - транзакция отмены удержания средств должна быть в статусе PENDING.
+    '''
+
+    db: Session = next(get_db())
+    try:
+        '''
+        Поиск исходной транзакции удержания по operation_id
+        '''
+        hold_transaction = db.query(Transactions).filter(
+            Transactions.transaction_id == operation_id
+        ).first()
+
+
+        '''
+        Проверка типа и статуса транзакции
+
+        Возвращает успешный ответ, если транзакция уже оказалась завершена:
+        ```
+        {
+            "operation_id": "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX",
+            "account_id": "YYYYYYYY-YYYY-YYYY-YYYY-YYYYYYYYYYYY",
+            "amount": 100,
+            "status": "CANCELLED",
+            "message": "Средства по данной операции уже отменены."
+        }
+        ```
+
+        Ошибка, если у типа транзакции стоит какой-то иной тип, отличный от удержания (HOLD).
+        Ошибка, если у статуса транзакции стоит какой-то иной тип, отличный от ожиждания (PENDING).
+        Ошибка, если у статуса транзакция уже завершена (CANCELLED).
+        Ошибка, если средства уже списаны (COMPLETED).
+        '''
+
+        if not hold_transaction:
+            raise ValueError(f"Транзакция удержания с ID '{operation_id}' не найдена.")
+
+        if hold_transaction.transaction_type != 'HOLD':
+            raise ValueError(f"Транзакция с ID '{operation_id}' не является операцией удержания.")
+        
+        if hold_transaction.transaction_status == 'CANCELLED':
+            return {
+                "operation_id": hold_transaction.transaction_id,
+                "account_id": hold_transaction.account_id,
+                "amount": float(hold_transaction.amount),
+                "status": hold_transaction.transaction_status,
+                "message": "Средства по данной операции уже отменены."
+            }
+        if hold_transaction.transaction_status == 'COMPLETED':
+            raise ValueError(f"Транзакция с ID '{operation_id}' уже списана. Невозможно отменить удержание.")
+        
+        if hold_transaction.transaction_status != 'PENDING':
+            raise ValueError(f"Транзакция с ID '{operation_id}' имеет статус '{hold_transaction.transaction_status}', невозможно отменить. Ожидается 'PENDING'.")
+
+        account = db.query(Accounts).filter(
+            Accounts.id == hold_transaction.account_id
+        ).first()
+
+        if not account:
+            raise ValueError(f"Счет с ID '{hold_transaction.account_id}' для транзакции '{operation_id}' не найден.")
+
+        amount_to_return = float(hold_transaction.amount)
+       
+        '''
+        Успешная транзакция добавляется в таблицу
+        '''
+
+        hold_transaction.transaction_status = 'CANCELLED'
+        hold_transaction.transaction_date = datetime.now(timezone.utc)
+
+        account.held_balance = float(account.held_balance) - amount_to_return
+
+        db.commit()
+
+        return {
+            "operation_id": hold_transaction.transaction_id,
+            "account_id": account.account_number,
+            "amount": amount_to_return,
+            "status": hold_transaction.transaction_status,
+            "message": "Удержание средств успешно отменено."
+        }
+
+    except Exception as e:
+        db.rollback()
+        raise e
+    finally:
+        db.close()

@@ -1,5 +1,5 @@
 from flask import Blueprint, jsonify, request
-from app.services import get_welcome_message, get_example_data, process_charge_funds, process_hold_funds
+from app.services import get_welcome_message, get_example_data, process_charge_funds, process_hold_funds, process_cancel_hold
 
 bp = Blueprint('main', __name__)
 
@@ -86,6 +86,34 @@ def charge_funds_endpoint(operation_id: str):
             return jsonify(result), 200
         else:
             return jsonify(result), 200
+
+    except ValueError as e:
+        return jsonify({'message': str(e)}), 400
+    except Exception as e:
+        return jsonify({'message': 'Произошла внутренняя ошибка сервера.', 'error': str(e)}), 500
+
+@bp.route('/api/operation/<string:operation_id>/cancel', methods=['POST'])
+def cancel_hold_endpoint(operation_id: str):
+    '''
+    Эндпоинт для отмены ранее удержанных средств.
+
+    Входные аргументы:
+    - operation_id - UUID;
+
+    Выходные данные:
+    - JSON-ответ (см. services.py - process_charge_funds())
+    - Код ответа:
+        - 200 - уже операция завершена до этого запроса или завершена от этого запроса;
+        - 400 - ошибка в запросе;
+        - 500 - другая ошибка.
+    '''
+    try:
+        result = process_cancel_hold(operation_id)
+        
+        if "Средства по данной операции уже отменены." in result.get("message", ""):
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 200 
 
     except ValueError as e:
         return jsonify({'message': str(e)}), 400
