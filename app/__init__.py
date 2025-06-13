@@ -11,6 +11,7 @@ def create_app():
     app = Flask(__name__)
 
     # Настройки приложения
+    app.config['EPAY_ERROR_CODES'] = config.EPAY_ERROR_CODES
     app.config['ERROR_CARD_NUMBERS'] = config.ERROR_CARD_NUMBERS
     app.config['_3DS_OTP_CODE'] = config._3DS_OTP_CODE
 
