@@ -2,11 +2,25 @@ import json
 import random
 import uuid
 
+from marshmallow import ValidationError
+from app.schemas import CryptopayRequestSchema, CryptogramSchema
+
 from flask import Blueprint, jsonify, request, current_app
 
 # Инициализация Blueprint
 main_bp = Blueprint('main', __name__)
 payment_bp = Blueprint('payment', __name__, url_prefix='/api/payment')
+
+# Инициализация схем валидации
+cryptopay_request_schema = CryptopayRequestSchema()
+cryptogram_schema = CryptogramSchema()
+
+
+def init_app(app):
+    # Инициализация приложения
+    app.register_blueprint(main_bp)
+    app.register_blueprint(payment_bp)
+
 
 @main_bp.route('/', methods=['GET'])
 def home():
@@ -19,66 +33,84 @@ def home():
 @payment_bp.route('/cryptopay/', methods=['POST'])
 def cryptopay():
     """
-    Эндпоинт для эмуляции платежей с использованием криптограммы
+    Эндпоинт для эмуляции платежей с использованием криптограммы.
+    На текущий момент обрабатывает платежи без 3DS.
     """
-    current_app.logger.info("Получен запрос к /api/payment/cryptopay/")
 
     try:
         request_data = request.get_json()
         if not request_data:
             return jsonify({
-                "code": 400,
-                "message": "Bad Request: Empty or invalid JSON body.",
-                "id": "",
-                "reference": "",
-                "accountId": ""
+                "code": 400, "message": "Bad Request: Empty or invalid JSON body.",
+                "id": "", "reference": "", "accountId": ""
             }), 400
 
-        # Считывание и валидация некоторых значений
-        amount = request_data.get('amount')
-        currency = request_data.get('currency')
-        invoice_id = request_data.get('invoiceId')
-        account_id = request_data.get('accountId')
-        cryptogram_str = request_data.get('cryptogram')
-
-        if not all([amount, currency, invoice_id, cryptogram_str]):
+        # Валидация входных данных
+        try:
+            validated_data = cryptopay_request_schema.load(request_data)
+        except ValidationError as err:
             return jsonify({
                 "code": 400,
-                "message": "Bad Request: Missing required fields (amount, currency, invoiceId, cryptogram).",
-                "invoiceId": invoice_id,
+                "message": "Bad Request: Validation error.",
+                "errors": err.messages,
+                "invoiceId": request_data.get('invoiceId', ''),
                 "id": "",
                 "reference": "",
-                "accountId": account_id
+                "accountId": request_data.get('accountId', '')
             }), 400
 
-        # Считывание и валидация криптограммы
+        # Получение данных из словаря уже валидированных значений
+        amount = validated_data['amount']
+        currency = validated_data['currency']
+        name = validated_data['name']
+        cryptogram_str = validated_data['cryptogram']
+        invoice_id = validated_data['invoiceId']
+        description = validated_data['description']
+        post_link = validated_data['postLink']
+        card_save = validated_data['cardSave']
+        invoice_id_alt = validated_data.get('invoiceIdAlt')
+        account_id = validated_data.get('accountId')
+        email = validated_data.get('email')
+        phone = validated_data.get('phone')
+        failure_post_link = validated_data.get('failurePostLink')
+        data_str = validated_data.get('data')
+
+        # Считывание и валидация содержимого криптограммы
         try:
-            cryptogram_data = json.loads(cryptogram_str)
+            cryptogram_raw_data = json.loads(cryptogram_str)
+            cryptogram_data = cryptogram_schema.load(cryptogram_raw_data)
         except json.JSONDecodeError:
             return jsonify({
                 "code": 400,
-                "message": "Bad Request: Invalid cryptogram format.",
-                "invoiceId": invoice_id,
-                "id": "",
-                "reference": "",
-                "accountId": account_id
+                "message": "Bad Request: Invalid cryptogram format (not a valid JSON string).",
+                "invoiceId": invoice_id, "id": "", "reference": "", "accountId": account_id
             }), 400
-
-        card_number = cryptogram_data.get('hpan')
-        exp_date = cryptogram_data.get('expDate')
-        cvc = cryptogram_data.get('cvc')
-
-        if not all([card_number, exp_date, cvc]):
+        except ValidationError as err:
             return jsonify({
                 "code": 400,
-                "message": "Bad Request: Missing required fields in cryptogram (hpan, expDate, cvc).",
-                "invoiceId": invoice_id,
-                "id": "",
-                "reference": "",
-                "accountId": account_id
+                "message": "Bad Request: Cryptogram validation error.",
+                "errors": err.messages,
+                "invoiceId": invoice_id, "id": "", "reference": "", "accountId": account_id
             }), 400
 
-        # Проверка карты на ее наличие в словаре таковых с ошибками и их ошибки
+        card_number = cryptogram_data['hpan']
+        exp_date = cryptogram_data['expDate']
+        cvc = cryptogram_data['cvc']
+        terminal_id = cryptogram_data.get('terminalId')
+
+        # Считывание data, если оно есть
+        data_parsed = None
+        if data_str:
+            try:
+                data_parsed = json.loads(data_str)
+            except json.JSONDecodeError:
+                return jsonify({
+                    "code": 400,
+                    "message": "Bad Request: Invalid 'data' format (must be a JSON string).",
+                    "invoiceId": invoice_id, "id": "", "reference": "", "accountId": account_id
+                }), 400
+
+        # Проверка номера карты на его наличие в списке таковых с ошибками
         error_code_for_card = current_app.config['ERROR_CARD_NUMBERS'].get(card_number)
 
         if error_code_for_card is not None:
@@ -86,7 +118,6 @@ def cryptopay():
                 error_code_for_card,
                 "Неизвестная ошибка: Код ошибки не найден в EPAY_ERROR_CODES."
             )
-
             return jsonify({
                 "code": error_code_for_card,
                 "message": error_message,
@@ -96,7 +127,7 @@ def cryptopay():
                 "accountId": account_id
             }), 400
 
-        # Генерация случайных значений для ключей, в которых это позволительно
+        # Генерация других численных значений для ответа
         transaction_id = str(uuid.uuid4())
         reference = ''.join(random.choices('0123456789', k=12))
         int_reference = uuid.uuid4().hex.upper()[:16]
@@ -106,15 +137,15 @@ def cryptopay():
         # Успешный ответ
         response_data = {
             "id": transaction_id,
-            "accountId": account_id,
+            "accountId": account_id if account_id else "",
             "amount": amount,
             "amountBonus": 0,
             "currency": currency,
-            "description": request_data.get('description'),
-            "email": request_data.get('email'),
+            "description": description,
+            "email": email if email else "",
             "invoiceID": invoice_id,
             "language": "rus",
-            "phone": request_data.get('phone'),
+            "phone": phone if phone else "",
             "reference": reference,
             "intReference": int_reference,
             "secure3D": None,
@@ -126,12 +157,8 @@ def cryptopay():
             "secureDetails": "",
             "qrReference": "",
             "ip": request.remote_addr or "127.0.0.1",
-            "ipCity": "",
-            "ipCountry": "",
-            "ipDistrict": "",
-            "ipLatitude": 0,
-            "ipLongitude": 0,
-            "ipRegion": "",
+            "ipCity": "", "ipCountry": "", "ipDistrict": "",
+            "ipLatitude": 0, "ipLongitude": 0, "ipRegion": "",
             "issuerBankCountry": "KAZ",
             "isCredit": False
         }
@@ -145,7 +172,3 @@ def cryptopay():
             "reference": "",
             "accountId": ""
         }), 500
-
-def init_app(app):
-    app.register_blueprint(main_bp)
-    app.register_blueprint(payment_bp)

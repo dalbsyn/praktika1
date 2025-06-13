@@ -14,6 +14,7 @@ def create_app():
     app.config['EPAY_ERROR_CODES'] = config.EPAY_ERROR_CODES
     app.config['ERROR_CARD_NUMBERS'] = config.ERROR_CARD_NUMBERS
     app.config['_3DS_OTP_CODE'] = config._3DS_OTP_CODE
+    app.config['VALIDATION_REQUIRE_TLD_FOR_URLS'] = config.VALIDATION_REQUIRE_TLD_FOR_URLS
 
     # Настройка базы данных
     app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('POSTGRES_URL')
@@ -29,5 +30,7 @@ def create_app():
     app.redis = Redis.from_url(os.environ.get('REDIS_URL', 'redis://localhost:6379/0'))
 
     routes.init_app(app)
+
+    print(f"DEBUG INIT: Configured VALIDATION_REQUIRE_TLD_FOR_URLS: {app.config['VALIDATION_REQUIRE_TLD_FOR_URLS']}")
 
     return app

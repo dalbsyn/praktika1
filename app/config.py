@@ -2,6 +2,12 @@
 Настройки самого приложения
 """
 
+# OTP-код
+_3DS_OTP_CODE = "123456"
+
+# Требование наличие домена верхнего уровня во время валидации URL
+VALIDATION_REQUIRE_TLD_FOR_URLS = False
+
 # Коды ошибок Epay
 EPAY_ERROR_CODES = {
     0: "успех",
@@ -93,5 +99,3 @@ ERROR_CARD_NUMBERS = {
     "5123456789012345": 496
 }
 
-# OTP-код
-_3DS_OTP_CODE = "123456"
