@@ -1,11 +1,11 @@
 import json
-import random
 import uuid
 
-from marshmallow import ValidationError
-from app.schemas import CryptopayRequestSchema, CryptogramSchema
-
 from flask import Blueprint, jsonify, request, current_app
+from marshmallow import ValidationError
+
+from app.schemas import CryptopayRequestSchema, CryptogramSchema
+from app.services import create_transaction
 
 # Инициализация Blueprint
 main_bp = Blueprint('main', __name__)
@@ -36,6 +36,8 @@ def cryptopay():
     Эндпоинт для эмуляции платежей с использованием криптограммы.
     На текущий момент обрабатывает платежи без 3DS.
     """
+
+    db_session = current_app.extensions['sqlalchemy_session']()
 
     try:
         request_data = request.get_json()
@@ -77,26 +79,19 @@ def cryptopay():
 
         # Считывание и валидация содержимого криптограммы
         try:
-            cryptogram_raw_data = json.loads(cryptogram_str)
-            cryptogram_data = cryptogram_schema.load(cryptogram_raw_data)
-        except json.JSONDecodeError:
+            cryptogram_str = validated_data['cryptogram']
+            cryptogram_data = cryptogram_schema.loads(cryptogram_str)
+            hpan = cryptogram_data['hpan']  # Получаем hpan из криптограммы
+            exp_date = cryptogram_data['expDate']
+            cvc = cryptogram_data.get('cvc')
+            terminal_id = cryptogram_data.get('terminalId')
+        except (json.JSONDecodeError, ValidationError) as err:
+            current_app.logger.warning(f"Ошибка десериализации/валидации криптограммы: {err}")
             return jsonify({
-                "code": 400,
-                "message": "Bad Request: Invalid cryptogram format (not a valid JSON string).",
-                "invoiceId": invoice_id, "id": "", "reference": "", "accountId": account_id
+                "code": 400, "message": "Bad Request: Invalid cryptogram format or content.",
+                "errors": str(err), "invoiceId": validated_data['invoiceId'],
+                "id": "", "reference": "", "accountId": validated_data.get('accountId')
             }), 400
-        except ValidationError as err:
-            return jsonify({
-                "code": 400,
-                "message": "Bad Request: Cryptogram validation error.",
-                "errors": err.messages,
-                "invoiceId": invoice_id, "id": "", "reference": "", "accountId": account_id
-            }), 400
-
-        card_number = cryptogram_data['hpan']
-        exp_date = cryptogram_data['expDate']
-        cvc = cryptogram_data['cvc']
-        terminal_id = cryptogram_data.get('terminalId')
 
         # Считывание data, если оно есть
         data_parsed = None
@@ -111,56 +106,67 @@ def cryptopay():
                 }), 400
 
         # Проверка номера карты на его наличие в списке таковых с ошибками
-        error_code_for_card = current_app.config['ERROR_CARD_NUMBERS'].get(card_number)
+        error_code_key_for_card = None
+        # Проверяем, есть ли hpan в наших "ошибочных" номерах
+        if hpan in current_app.config['ERROR_CARD_NUMBERS']:
+            error_code_key_for_card = current_app.config['ERROR_CARD_NUMBERS'][hpan]
 
-        if error_code_for_card is not None:
-            error_message = current_app.config['EPAY_ERROR_CODES'].get(
-                error_code_for_card,
-                "Неизвестная ошибка: Код ошибки не найден в EPAY_ERROR_CODES."
-            )
+        if error_code_key_for_card is not None:
+            # Получаем код и сообщение об ошибке из EPAY_ERROR_CODES
+            error_code = error_code_key_for_card
+            error_message = current_app.config['EPAY_ERROR_CODES'].get(error_code_key_for_card)
+
+            # Если код не найден, используем общий, но это маловероятно, если EPAY_ERROR_CODES настроен верно.
+            if error_code is None:
+                error_code = current_app.config['EPAY_ERROR_CODES'].get("general_system_error", 9999)
+                error_message = "Transaction failed: Unknown error code for card."
+
+            # Возвращаем ошибку без сохранения в БД
             return jsonify({
-                "code": error_code_for_card,
+                "code": error_code,
                 "message": error_message,
-                "invoiceId": invoice_id,
-                "id": str(uuid.uuid4()),
+                "invoiceId": validated_data['invoiceId'],
+                "id": str(uuid.uuid4()),  # Генерируем новый ID для ответа об ошибке
                 "reference": "",
-                "accountId": account_id
+                "accountId": validated_data.get('accountId')
             }), 400
 
-        # Генерация других численных значений для ответа
-        transaction_id = str(uuid.uuid4())
-        reference = ''.join(random.choices('0123456789', k=12))
-        int_reference = uuid.uuid4().hex.upper()[:16]
-        approval_code = ''.join(random.choices('0123456789', k=6))
-        card_id = str(uuid.uuid4())
+        new_transaction = create_transaction(db_session, validated_data, cryptogram_data)
+
+        current_app.logger.info(
+            f"Транзакция {new_transaction.id} (Invoice: {new_transaction.invoice_id}) успешно сохранена в БД со статусом {new_transaction.status}.")
 
         # Успешный ответ
         response_data = {
-            "id": transaction_id,
-            "accountId": account_id if account_id else "",
-            "amount": amount,
-            "amountBonus": 0,
-            "currency": currency,
-            "description": description,
-            "email": email if email else "",
-            "invoiceID": invoice_id,
-            "language": "rus",
-            "phone": phone if phone else "",
-            "reference": reference,
-            "intReference": int_reference,
-            "secure3D": None,
-            "cardID": card_id,
-            "fee": 0,
-            "approvalCode": approval_code,
-            "code": 0,
-            "status": "AUTH",
-            "secureDetails": "",
-            "qrReference": "",
-            "ip": request.remote_addr or "127.0.0.1",
-            "ipCity": "", "ipCountry": "", "ipDistrict": "",
-            "ipLatitude": 0, "ipLongitude": 0, "ipRegion": "",
-            "issuerBankCountry": "KAZ",
-            "isCredit": False
+            "id": str(new_transaction.id),  # UUID транзакции эмулятора
+            "accountId": validated_data.get('accountId', ''),  # Из входных данных
+            "amount": float(new_transaction.amount),  # Из сохраненной транзакции
+            "amountBonus": 0,  # Заглушка, если нет бонусов
+            "currency": new_transaction.currency,  # Из сохраненной транзакции
+            "description": new_transaction.description,  # Из сохраненной транзакции
+            "email": new_transaction.email,  # Из сохраненной транзакции
+            "invoiceID": new_transaction.invoice_id,  # Из сохраненной транзакции
+            "language": "rus",  # Заглушка
+            "phone": new_transaction.phone,  # Из сохраненной транзакции
+            "reference": new_transaction.reference,  # Из сохраненной транзакции
+            "intReference": new_transaction.int_reference,  # Из сохраненной транзакции
+            "secure3D": None,  # Пока нет 3DS, поэтому null
+            "cardID": new_transaction.card_id,  # Из сохраненной транзакции (эмулируется в services.py)
+            "fee": 0,  # Заглушка
+            "approvalCode": new_transaction.approval_code,  # Из сохраненной транзакции
+            "code": 0,  # 0 означает успех (стандартный код для OK в этом API)
+            "status": new_transaction.status,  # Из сохраненной транзакции
+            "secureDetails": "",  # Заглушка
+            "qrReference": "",  # Заглушка
+            "ip": request.remote_addr or "127.0.0.1",  # IP адрес клиента
+            "ipCity": "",  # Заглушка
+            "ipCountry": "",  # Заглушка
+            "ipDistrict": "",  # Заглушка
+            "ipLatitude": 0,  # Заглушка
+            "ipLongitude": 0,  # Заглушка
+            "ipRegion": "",  # Заглушка
+            "issuerBankCountry": "KAZ",  # Заглушка, можно расширить
+            "isCredit": False  # Заглушка
         }
         return jsonify(response_data), 200
 
