@@ -1,36 +1,48 @@
 from flask import Flask
 from sqlalchemy import create_engine
+from sqlalchemy.orm import scoped_session
 from sqlalchemy.orm import sessionmaker
 from redis import Redis
 import os
 
 from app import config
-from app import routes
+from app.routes import init_app
+from app.models import Base
+
+engine = None
+SessionLocal = None
 
 def create_app():
     app = Flask(__name__)
 
     # Настройки приложения
-    app.config['EPAY_ERROR_CODES'] = config.EPAY_ERROR_CODES
-    app.config['ERROR_CARD_NUMBERS'] = config.ERROR_CARD_NUMBERS
-    app.config['_3DS_OTP_CODE'] = config._3DS_OTP_CODE
-    app.config['VALIDATION_REQUIRE_TLD_FOR_URLS'] = config.VALIDATION_REQUIRE_TLD_FOR_URLS
-
-    # Настройка базы данных
-    app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('POSTGRES_URL')
-    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    app.config.from_object(config)
 
     # Инициализация движка SQLAlchemy
-    engine = create_engine(app.config['SQLALCHEMY_DATABASE_URI'])
-    Session = sessionmaker(bind=engine)
-    app.db_session = Session()
-    app.db_engine = engine
+    global engine, SessionLocal
+    engine = create_engine(app.config['DATABASE_URL'], echo=True)
+    SessionLocal = scoped_session(sessionmaker(autocommit=False, autoflush=False, bind=engine))
+    if not hasattr(app, 'extensions'):
+        app.extensions = {}
+    app.extensions['sqlalchemy_session'] = SessionLocal
 
     # Инициализация Redis
     app.redis = Redis.from_url(os.environ.get('REDIS_URL', 'redis://localhost:6379/0'))
 
-    routes.init_app(app)
+    init_app(app)
 
-    print(f"DEBUG INIT: Configured VALIDATION_REQUIRE_TLD_FOR_URLS: {app.config['VALIDATION_REQUIRE_TLD_FOR_URLS']}")
+    @app.teardown_appcontext
+    def remove_session(exception=None):
+        # --- ИЗМЕНЕНИЕ ЗДЕСЬ: Безопасное получение фабрики сессий ---
+        # Используем .get() для безопасного доступа, чтобы избежать KeyError
+        db_session_factory = app.extensions.get('sqlalchemy_session')
+        if db_session_factory:
+            db_session_factory.remove()
+            app.logger.debug("Сессия SQLAlchemy закрыта.")
+        else:
+            app.logger.warning("Фабрика сессий SQLAlchemy не найдена при завершении контекста.")
+
+        if exception:
+            app.logger.error(f"Контекст запроса завершился с ошибкой: {exception}")
 
     return app
