@@ -2,6 +2,28 @@ import os
 from dotenv import load_dotenv
 
 load_dotenv()
+
+def build_url(same: bool):
+    """
+    Функция для формирования URL подключения к базе данных
+
+    Есть один аргумент (same):
+        - Если True - будет использовать URL из .env файла;
+        - Если  False - будет предоставлена возможность форматирования URL по-своему. Редактирование параметров URL  проводится непосредственно внутри функции.
+    :return:
+    """
+    if same:
+        return os.getenv('DATABASE_URL')
+    else:
+        user = os.getenv('POSTGRES_USER')
+        password = os.getenv('POSTGRES_PASSWORD')
+        host = 'db'
+        port = os.getenv('POSTGRES_PORT')
+        db = os.getenv('POSTGRES_DB')
+        url = "postgresql+psycopg://{}:{}@{}:{}/{}".format(user, password, host, port, db)
+        return url
+
+
 """
 Настройки самого приложения
 """
@@ -12,7 +34,7 @@ _3DS_OTP_CODE = "123456"
 # Требование наличие домена верхнего уровня во время валидации URL
 VALIDATION_REQUIRE_TLD_FOR_URLS = False
 
-DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_URL = build_url(False)
 
 # Коды ошибок Epay
 EPAY_ERROR_CODES = {
