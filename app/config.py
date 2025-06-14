@@ -1,3 +1,7 @@
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 """
 Настройки самого приложения
 """
@@ -7,6 +11,8 @@ _3DS_OTP_CODE = "123456"
 
 # Требование наличие домена верхнего уровня во время валидации URL
 VALIDATION_REQUIRE_TLD_FOR_URLS = False
+
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 # Коды ошибок Epay
 EPAY_ERROR_CODES = {
