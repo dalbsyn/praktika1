@@ -70,19 +70,12 @@ def cryptopay():
             }), 400
 
         # Получение данных из словаря уже валидированных значений
-        amount = validated_data['amount']
-        currency = validated_data['currency']
-        name = validated_data['name']
-        cryptogram_str = validated_data['cryptogram']
         invoice_id = validated_data['invoiceId']
-        description = validated_data['description']
-        post_link = validated_data['postLink']
-        card_save = validated_data['cardSave']
-        invoice_id_alt = validated_data.get('invoiceIdAlt')
+        validated_data.get('invoiceIdAlt')
         account_id = validated_data.get('accountId')
-        email = validated_data.get('email')
-        phone = validated_data.get('phone')
-        failure_post_link = validated_data.get('failurePostLink')
+        validated_data.get('email')
+        validated_data.get('phone')
+        validated_data.get('failurePostLink')
         data_str = validated_data.get('data')
 
         # Считывание и валидация содержимого криптограммы
@@ -90,9 +83,8 @@ def cryptopay():
             cryptogram_str = validated_data['cryptogram']
             cryptogram_data = cryptogram_schema.loads(cryptogram_str)
             hpan = cryptogram_data['hpan']  # Получаем hpan из криптограммы
-            exp_date = cryptogram_data['expDate']
-            cvc = cryptogram_data.get('cvc')
-            terminal_id = cryptogram_data.get('terminalId')
+            cryptogram_data.get('cvc')
+            cryptogram_data.get('terminalId')
         except (json.JSONDecodeError, ValidationError) as err:
             current_app.logger.warning(f"Ошибка десериализации/валидации криптограммы: {err}")
             return jsonify({
@@ -102,10 +94,9 @@ def cryptopay():
             }), 400
 
         # Считывание data, если оно есть
-        data_parsed = None
         if data_str:
             try:
-                data_parsed = json.loads(data_str)
+                json.loads(data_str)
             except json.JSONDecodeError:
                 return jsonify({
                     "code": 400,
@@ -196,34 +187,37 @@ def charge_operation(transaction_id: uuid.UUID):
     db_session: Session = current_app.extensions['sqlalchemy_session']()
 
     try:
-        request_data = request.get_json()
+        # Получение данных из JSON-запроса. Если JSON нет, то считывание из URL
+        request_data_json = request.get_json(silent=True)
+
         charge_amount = None
-        if request_data and 'amount' in request_data:
+
+        # JSON или параметры URL
+        if request_data_json:
+            current_app.logger.debug(f"Получены данные из JSON для charge: {request_data_json}")
+            data_source = request_data_json
+        else:
+            current_app.logger.debug(f"Получены данные из URL args для charge: {request.args}")
+            data_source = request.args
+
+        # Считывание суммы
+        if 'amount' in data_source:
             try:
-                charge_amount = decimal.Decimal(str(request_data['amount'])).quantize(decimal.Decimal('0.01'))
+                charge_amount = decimal.Decimal(str(data_source['amount'])).quantize(decimal.Decimal('0.01'))
             except (ValueError, decimal.InvalidOperation):
-                return jsonify({"error": "Некорректный формат суммы"}), 400
+                return jsonify({"error": "Некорректный формат суммы."}), 400
 
         updated_transaction = charge_transaction(db_session, transaction_id, charge_amount)
 
         account_balance_record = db_session.query(AccountBalance).filter_by(
             account_id=updated_transaction.account_id).first()
-        remaining_authorized_balance = str(
-            account_balance_record.authorized_balance) if account_balance_record else "0.00"
+        remaining_authorized_balance = str(account_balance_record.authorized_balance) if account_balance_record else "0.00"
 
         return jsonify({
-            "message": "Средства успешно списаны.",
-            "transaction_id": str(updated_transaction.id),
-            "invoice_id": updated_transaction.invoice_id,
-            "status": updated_transaction.status,
-            "charged_amount": str(charge_amount if charge_amount is not None else updated_transaction.amount),
-            "remaining_authorized_balance": remaining_authorized_balance
         }), 200
-
     except Exception as e:
         # Заглушка ошибки для соответсвия таковму из EPAY
         return jsonify({"error": str(e)}), 400
-
 
 @payment_bp.route('/<uuid:transaction_id>/cancel', methods=['POST'])
 def cancel_operation(transaction_id: uuid.UUID):
@@ -231,7 +225,7 @@ def cancel_operation(transaction_id: uuid.UUID):
 
     try:
         # Выполнение отмены платежа
-        updated_transaction = cancel_transaction(db_session, transaction_id)
+        cancel_transaction(db_session, transaction_id)
         return "", 200
 
     except Exception as e:
@@ -244,26 +238,38 @@ def refund_operation(transaction_id: uuid.UUID):
     db_session: Session = current_app.extensions['sqlalchemy_session']()
 
     try:
-        request_data = request.get_json()
+        # Получение данных из JSON-запроса. Если JSON нет, то считывание из URL
+        request_data_json = request.get_json(silent=True)
 
-        # По документации (https://epayment.kz/docs/vozvrat-chastichnyi-vozvrat), кажется, что externalID обязательный и
-        # имеет длину в 22 символа.
-        external_id = request_data.get('externalID')
+        external_id = None
+        refund_amount = None
+
+        # JSON или параметры URL
+        if request_data_json:
+            current_app.logger.debug(f"Получены данные из JSON для refund: {request_data_json}")
+            data_source = request_data_json
+        else:  # Нет JSON-данных, пробуем параметры URL
+            current_app.logger.debug(f"Получены данные из URL args для refund: {request.args}")
+            data_source = request.args
+
+        # Получение externalID
+        external_id = data_source.get('externalID')
+
+        # Считывание amount
+        if 'amount' in data_source:
+            try:
+                refund_amount = decimal.Decimal(str(data_source['amount'])).quantize(decimal.Decimal('0.01'))
+            except (ValueError, decimal.InvalidOperation):
+                return jsonify({"code": 100, "message": "Некорректный формат суммы."}), 400
+
+        # Валидация externalID, независимо от источника
         if not external_id:
             raise Exception("Параметр 'externalID' является обязательным.")
         if not isinstance(external_id, str) or len(external_id) != 22:
             raise Exception("Параметр 'externalID' должен быть строкой длиной 22 символа.")
 
-        # Обработка amount
-        refund_amount = None
-        if 'amount' in request_data:
-            try:
-                refund_amount = decimal.Decimal(str(request_data['amount'])).quantize(decimal.Decimal('0.01'))
-            except (ValueError, decimal.InvalidOperation):
-                return jsonify({"code": 100, "message": "Некорректный формат суммы"}), 400
+        updated_transaction = refund_transaction(db_session, transaction_id, refund_amount, external_id)
 
-        # Возврат средств
-        refund_transaction(db_session, transaction_id, refund_amount, external_id)
         return "", 200
 
     except Exception as e:

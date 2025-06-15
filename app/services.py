@@ -1,12 +1,47 @@
 import uuid
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy import func, and_
+from sqlalchemy import func, and_, update
 from app.models.transaction import Transaction
 from app.models.account_balance import AccountBalance
 from datetime import datetime, timezone
 from sqlalchemy.orm.session import Session
 import decimal
+from typing import Optional
 
+def _update_account_balance_and_commit(db_session: Session, transaction: Transaction, amount_change: decimal.Decimal):
+    """
+    Вспомогательная функция для обновления authorized_balance аккаунта - гарантия неотрицательности баланса, коммита сессии
+    и обновления объекта транзакции
+
+    :param db_session: сессия базы данных
+    :param transaction: UUID транзакции
+    :param amount_change: количество средств
+    :return: транзакцию
+    """
+
+    # Обновление AccountBalance: вычитаем amount_change из authorized_balance
+    db_session.query(AccountBalance).filter(AccountBalance.account_id == transaction.account_id).update(
+        {
+            AccountBalance.authorized_balance: AccountBalance.authorized_balance - amount_change,
+            AccountBalance.updated_at: func.now()
+        },
+        synchronize_session='fetch' # Важно для корректного обновления в рамках сессии
+    )
+
+    # Проверка на то, чтобы authorized_balance не уходил в минус. Если уходит, то будет 0.
+    db_session.execute(
+        update(AccountBalance).
+        where(and_(
+            AccountBalance.account_id == transaction.account_id,
+            AccountBalance.authorized_balance < 0
+        )).
+        values(authorized_balance=0, updated_at=func.now())
+    )
+
+    db_session.commit()
+    db_session.refresh(transaction)
+
+    return transaction
 
 def create_transaction(db_session, validated_data, cryptogram_data):
     """
@@ -31,7 +66,6 @@ def create_transaction(db_session, validated_data, cryptogram_data):
 
     # Создание новой записи транзакции
     new_transaction = Transaction(
-        # Поля, пришедшие из валидированных данных запроса
         invoice_id=validated_data['invoiceId'],
         invoice_id_alt=validated_data.get('invoiceIdAlt'),
         amount=validated_data['amount'],
@@ -60,7 +94,7 @@ def create_transaction(db_session, validated_data, cryptogram_data):
     )
 
     db_session.add(new_transaction)
-    db_session.flush()  # flush, чтобы получить ID новой транзакции до коммита
+    db_session.flush()
 
     # Агрегирование суммы удерживаемых средств по account_id
     amount_to_add = new_transaction.amount
@@ -70,7 +104,6 @@ def create_transaction(db_session, validated_data, cryptogram_data):
         authorized_balance=amount_to_add,
         updated_at=func.now()
     ).on_conflict_do_update(
-        # Указываем первичный ключ для обнаружения конфликта
         index_elements=[AccountBalance.account_id],
         set_={'authorized_balance': AccountBalance.authorized_balance + amount_to_add,
               'updated_at': func.now()}
@@ -86,15 +119,17 @@ def create_transaction(db_session, validated_data, cryptogram_data):
 def charge_transaction(db_session: Session, transaction_id: uuid.UUID, charge_amount: float = None):
     """
     Списывает (подтверждает) средства для авторизованной транзакции.
-    Если charge_amount не указан, списывается полная авторизованная сумма транзакции.
+    Если charge_amount не указан, списывается полная авторизованная сумма транзакци
 
-    Аргументы:
-        db_session: Сессия базы данных.
-        transaction_id: UUID транзакции, которая должна быть списана.
-        charge_amount: Опциональная сумма для списания. Если None, списывается вся авторизованная сумма.
+    :param db_session: сессия базы данных
+    :param transaction_id: UUID транзакции, которая должна быть списана
+    :param charge_amount: опциональная сумма для списания. Если None, списывается вся авторизованная сумма.
+    :return:
     """
+
+    # Тут костыль из-за Pycharm для явного обозначения того, что возвращщается именно Transacton
     try:
-        transaction = db_session.query(Transaction).filter_by(id=transaction_id).first()
+        transaction: Optional[Transaction] = db_session.query(Transaction).filter_by(id=transaction_id).first()
 
         if not transaction:
             raise Exception(f"Транзакция с ID {transaction_id} не найдена.")
@@ -104,12 +139,10 @@ def charge_transaction(db_session: Session, transaction_id: uuid.UUID, charge_am
                 f"Транзакция ID {transaction_id} находится в статусе '{transaction.status}', ожидается 'AUTH'.")
 
         amount_to_charge = transaction.amount if charge_amount is None else charge_amount
-
         amount_to_charge = decimal.Decimal(str(amount_to_charge)).quantize(decimal.Decimal('0.01'))
 
         if amount_to_charge <= 0:
             raise Exception("Сумма списания должна быть положительной.")
-
         if amount_to_charge > transaction.amount:
             raise Exception(
                 f"Запрошенная сумма {amount_to_charge} {transaction.currency} превышает авторизованную сумму {transaction.amount} {transaction.currency} для транзакции ID {transaction_id}."
@@ -118,27 +151,9 @@ def charge_transaction(db_session: Session, transaction_id: uuid.UUID, charge_am
         transaction.status = "CHARGE"
         transaction.updated_at = datetime.now(timezone.utc)
 
-        db_session.query(AccountBalance).filter(AccountBalance.account_id == transaction.account_id).update(
-            {
-                AccountBalance.authorized_balance: AccountBalance.authorized_balance - amount_to_charge,
-                AccountBalance.updated_at: func.now()
-            },
-            synchronize_session='fetch'
-        )
+        final_transaction = _update_account_balance_and_commit(db_session, transaction, amount_to_charge)
 
-        db_session.execute(
-            AccountBalance.__table__.update().
-            where(and_(
-                AccountBalance.account_id == transaction.account_id,
-                AccountBalance.authorized_balance < 0
-            )).
-            values(authorized_balance=0, updated_at=func.now())
-        )
-
-        db_session.commit()
-        db_session.refresh(transaction)
-
-        return transaction
+        return final_transaction
 
     except Exception as e:
         db_session.rollback()
@@ -154,45 +169,26 @@ def cancel_transaction(db_session: Session, transaction_id: uuid.UUID):
     :param transaction_id: идентификатор транзакции
     :return: json-ответ
     """
+
+    # Тут костыль из-за Pycharm для явного обозначения того, что возвращщается именно Transacton
     try:
-        transaction = db_session.query(Transaction).filter_by(id=transaction_id).first()
+        transaction: Optional[Transaction] = db_session.query(Transaction).filter_by(id=transaction_id).first()
 
         if not transaction:
             raise Exception(f"Транзакция с ID {transaction_id} не найдена.")
 
-        # Проверка транзакции на соответствие состоянию AUTH
         if transaction.status != "AUTH":
             raise Exception(
                 f"Транзакция ID {transaction_id} находится в статусе '{transaction.status}', ожидается 'AUTH' для отмены.")
 
-        # Обновление состоянис транзакции на CANCELLED
-        transaction.status = "CANCEL"
+        transaction.status = "CANCELED"
         transaction.updated_at = datetime.now(timezone.utc)
 
-        # Снятие с удержания уже закрытых средств
         amount_to_release = transaction.amount
 
-        db_session.query(AccountBalance).filter(AccountBalance.account_id == transaction.account_id).update(
-            {
-                AccountBalance.authorized_balance: AccountBalance.authorized_balance - amount_to_release,
-                AccountBalance.updated_at: func.now()
-            },
-            synchronize_session='fetch'
-        )
+        final_transaction = _update_account_balance_and_commit(db_session, transaction, amount_to_release)
 
-        # Если по какой-то причине сумма аккаунта окажется ниже 0, то пусть будет 0
-        db_session.execute(
-            AccountBalance.__table__.update().
-            where(and_(
-                AccountBalance.account_id == transaction.account_id,
-                AccountBalance.authorized_balance < 0
-            )).
-            values(authorized_balance=0, updated_at=func.now())
-        )
-
-        db_session.commit()
-        db_session.refresh(transaction)
-        return transaction
+        return final_transaction
 
     except Exception as e:
         db_session.rollback()
