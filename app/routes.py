@@ -2,7 +2,7 @@ from flask import Blueprint, request, jsonify, current_app
 from sqlalchemy.orm import Session
 from app.schemas import CryptopayRequestSchema, CryptogramSchema
 from app.services import (
-    create_transaction, charge_transaction, cancel_transaction
+    create_transaction, charge_transaction, cancel_transaction, refund_transaction
 )
 from marshmallow import ValidationError, fields
 import json
@@ -235,5 +235,38 @@ def cancel_operation(transaction_id: uuid.UUID):
         return "", 200
 
     except Exception as e:
+        # Заглушка ошибки для соответсвия таковму из EPAY
+        return jsonify({"code": 100, "message": str(e)}), 400
+
+
+@payment_bp.route('/<uuid:transaction_id>/refund', methods=['POST'])
+def refund_operation(transaction_id: uuid.UUID):
+    db_session: Session = current_app.extensions['sqlalchemy_session']()
+
+    try:
+        request_data = request.get_json()
+
+        # По документации (https://epayment.kz/docs/vozvrat-chastichnyi-vozvrat), кажется, что externalID обязательный и
+        # имеет длину в 22 символа.
+        external_id = request_data.get('externalID')
+        if not external_id:
+            raise Exception("Параметр 'externalID' является обязательным.")
+        if not isinstance(external_id, str) or len(external_id) != 22:
+            raise Exception("Параметр 'externalID' должен быть строкой длиной 22 символа.")
+
+        # Обработка amount
+        refund_amount = None
+        if 'amount' in request_data:
+            try:
+                refund_amount = decimal.Decimal(str(request_data['amount'])).quantize(decimal.Decimal('0.01'))
+            except (ValueError, decimal.InvalidOperation):
+                return jsonify({"code": 100, "message": "Некорректный формат суммы"}), 400
+
+        # Возврат средств
+        refund_transaction(db_session, transaction_id, refund_amount, external_id)
+        return "", 200
+
+    except Exception as e:
+        current_app.logger.error(f"Ошибка при возврате средств для транзакции {transaction_id}: {e}", exc_info=True)
         # Заглушка ошибки для соответсвия таковму из EPAY
         return jsonify({"code": 100, "message": str(e)}), 400

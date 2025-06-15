@@ -115,7 +115,7 @@ def charge_transaction(db_session: Session, transaction_id: uuid.UUID, charge_am
                 f"Запрошенная сумма {amount_to_charge} {transaction.currency} превышает авторизованную сумму {transaction.amount} {transaction.currency} для транзакции ID {transaction_id}."
             )
 
-        transaction.status = "CONFIRMED"
+        transaction.status = "CHARGE"
         transaction.updated_at = datetime.now(timezone.utc)
 
         db_session.query(AccountBalance).filter(AccountBalance.account_id == transaction.account_id).update(
@@ -166,7 +166,7 @@ def cancel_transaction(db_session: Session, transaction_id: uuid.UUID):
                 f"Транзакция ID {transaction_id} находится в статусе '{transaction.status}', ожидается 'AUTH' для отмены.")
 
         # Обновление состоянис транзакции на CANCELLED
-        transaction.status = "CANCELED"
+        transaction.status = "CANCEL"
         transaction.updated_at = datetime.now(timezone.utc)
 
         # Снятие с удержания уже закрытых средств
@@ -197,3 +197,59 @@ def cancel_transaction(db_session: Session, transaction_id: uuid.UUID):
     except Exception as e:
         db_session.rollback()
         raise Exception(f"Ошибка при отмене транзакции: {e}")
+
+
+def refund_transaction(db_session: Session, transaction_id: uuid.UUID, refund_amount: float = None,
+                       external_id: str = None):
+    """
+    Возврат средств.
+    Передаваемая транзакция должна быть со статусом CHARGE.
+    Возвращаемые средства вернутся на какой-то счет пользователя, а не в удерживаемую сумму (которая хранится в базе
+    данных). В базе данных счета пользователей не хранятся, так как не нужно. Средства возвращаются в никуда.
+
+    :param db_session: сессия базы данных
+    :param transaction_id: идентификатор транзакции
+    :param refund_amount: опциональный - количество средств для возврата
+    :param external_id: идентификатор коммерсанта
+    :return: json-ответ
+    """
+    try:
+        transaction = db_session.query(Transaction).filter_by(id=transaction_id).first()
+
+        if not transaction:
+            raise Exception(f"Транзакция с ID {transaction_id} не найдена.")
+
+        # Проверка транзакции на соответствие статусу CHARGE
+        if transaction.status != "CHARGE":
+            raise Exception(
+                f"Транзакция ID {transaction_id} находится в статусе '{transaction.status}', ожидается 'CHARGE' для возврата.")
+
+        if not external_id or not isinstance(external_id, str) or len(external_id) != 22:
+            raise Exception("Параметр 'externalID' является обязательным и должен быть строкой длиной 22 символа.")
+
+        # Сумма для возврата
+        amount_to_refund = transaction.amount if refund_amount is None else refund_amount
+
+        amount_to_refund = decimal.Decimal(str(amount_to_refund)).quantize(decimal.Decimal('0.01'))
+
+        if amount_to_refund <= 0:
+            raise Exception("Сумма возврата должна быть положительной.")
+
+        # Проверка того, что сумма возврата не превышает общую сумму транзакции
+        if amount_to_refund > transaction.amount:
+            raise Exception(
+                f"Запрошенная сумма возврата {amount_to_refund} {transaction.currency} превышает общую сумму транзакции {transaction.amount} {transaction.currency} для транзакции ID {transaction_id}."
+            )
+
+        # Обновляем статус транзакции на REFUNDED
+        transaction.status = "REFUNDED"
+        transaction.updated_at = datetime.now(timezone.utc)
+
+        db_session.commit()
+        db_session.refresh(transaction)
+
+        return transaction
+
+    except Exception as e:
+        db_session.rollback()  # Откатываем изменения при любой ошибке
+        raise Exception(f"Ошибка при возврате средств: {e}")
