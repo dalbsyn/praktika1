@@ -133,40 +133,37 @@ def cryptopay():
 
         new_transaction = create_transaction(db_session, validated_data, cryptogram_data)
 
-        current_app.logger.info(
-            f"Транзакция {new_transaction.id} (Invoice: {new_transaction.invoice_id}) успешно сохранена в БД со статусом {new_transaction.status}.")
-
         # Успешный ответ
         response_data = {
-            "id": str(new_transaction.id),  # UUID транзакции эмулятора
-            "accountId": validated_data.get('accountId', ''),  # Из входных данных
-            "amount": float(new_transaction.amount),  # Из сохраненной транзакции
-            "amountBonus": 0,  # Заглушка, если нет бонусов
-            "currency": new_transaction.currency,  # Из сохраненной транзакции
-            "description": new_transaction.description,  # Из сохраненной транзакции
-            "email": new_transaction.email,  # Из сохраненной транзакции
-            "invoiceID": new_transaction.invoice_id,  # Из сохраненной транзакции
-            "language": "rus",  # Заглушка
-            "phone": new_transaction.phone,  # Из сохраненной транзакции
-            "reference": new_transaction.reference,  # Из сохраненной транзакции
-            "intReference": new_transaction.int_reference,  # Из сохраненной транзакции
-            "secure3D": None,  # Пока нет 3DS, поэтому null
-            "cardID": new_transaction.card_id,  # Из сохраненной транзакции (эмулируется в services.py)
-            "fee": 0,  # Заглушка
-            "approvalCode": new_transaction.approval_code,  # Из сохраненной транзакции
-            "code": 0,  # 0 означает успех (стандартный код для OK в этом API)
-            "status": new_transaction.status,  # Из сохраненной транзакции
-            "secureDetails": "",  # Заглушка
-            "qrReference": "",  # Заглушка
-            "ip": request.remote_addr or "127.0.0.1",  # IP адрес клиента
-            "ipCity": "",  # Заглушка
-            "ipCountry": "",  # Заглушка
-            "ipDistrict": "",  # Заглушка
-            "ipLatitude": 0,  # Заглушка
-            "ipLongitude": 0,  # Заглушка
-            "ipRegion": "",  # Заглушка
-            "issuerBankCountry": "KAZ",  # Заглушка, можно расширить
-            "isCredit": False  # Заглушка
+            "id": str(new_transaction.id),
+            "accountId": validated_data.get('accountId', ''),
+            "amount": float(new_transaction.amount),
+            "amountBonus": 0,
+            "currency": new_transaction.currency,
+            "description": new_transaction.description,
+            "email": new_transaction.email,
+            "invoiceID": new_transaction.invoice_id,
+            "language": "rus",
+            "phone": new_transaction.phone,
+            "reference": new_transaction.reference,
+            "intReference": new_transaction.int_reference,
+            "secure3D": None,
+            "cardID": new_transaction.card_id,
+            "fee": 0,
+            "approvalCode": new_transaction.approval_code,
+            "code": 0,
+            "status": new_transaction.status,
+            "secureDetails": "",
+            "qrReference": "",
+            "ip": request.remote_addr or "127.0.0.1",
+            "ipCity": "",
+            "ipCountry": "",
+            "ipDistrict": "",
+            "ipLatitude": 0,
+            "ipLongitude": 0,
+            "ipRegion": "",
+            "issuerBankCountry": "KAZ",
+            "isCredit": False
         }
         return jsonify(response_data), 200
 
