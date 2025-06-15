@@ -1,15 +1,23 @@
+from flask import Blueprint, request, jsonify, current_app
+from sqlalchemy.orm import Session
+from app.schemas import CryptopayRequestSchema, CryptogramSchema
+from app.services import (
+    create_transaction, charge_transaction,
+)
+from marshmallow import ValidationError, fields
 import json
 import uuid
+import decimal
 
-from flask import Blueprint, jsonify, request, current_app
-from marshmallow import ValidationError
-
-from app.schemas import CryptopayRequestSchema, CryptogramSchema
-from app.services import create_transaction
+from app.models.account_balance import AccountBalance
 
 # Инициализация Blueprint
 main_bp = Blueprint('main', __name__)
 payment_bp = Blueprint('payment', __name__, url_prefix='/api/payment')
+
+class ChargeRequestSchema(CryptopayRequestSchema):
+    amount = fields.Decimal(required=False, as_string=False, places=2, load_default=None,
+                            metadata={'description': 'Сумма для списания. Если не указана, списывается вся сумма транзакции.'})
 
 # Инициализация схем валидации
 cryptopay_request_schema = CryptopayRequestSchema()
@@ -175,3 +183,43 @@ def cryptopay():
             "reference": "",
             "accountId": ""
         }), 500
+
+
+@payment_bp.route('/<uuid:transaction_id>/charge', methods=['POST'])
+def charge_operation(transaction_id: uuid.UUID):
+    """
+    Эндпоинт для снятия средств.
+
+    :param transaction_id: UUID транзакции, которая находится в состоянии AUTH. Можно получить из ответа на выполнение запроса платежа.
+    :return: json-ответ
+    """
+    db_session: Session = current_app.extensions['sqlalchemy_session']()
+
+    try:
+        request_data = request.get_json()
+        charge_amount = None
+        if request_data and 'amount' in request_data:
+            try:
+                charge_amount = decimal.Decimal(str(request_data['amount'])).quantize(decimal.Decimal('0.01'))
+            except (ValueError, decimal.InvalidOperation):
+                return jsonify({"error": "Некорректный формат суммы"}), 400
+
+        updated_transaction = charge_transaction(db_session, transaction_id, charge_amount)
+
+        account_balance_record = db_session.query(AccountBalance).filter_by(
+            account_id=updated_transaction.account_id).first()
+        remaining_authorized_balance = str(
+            account_balance_record.authorized_balance) if account_balance_record else "0.00"
+
+        return jsonify({
+            "message": "Средства успешно списаны.",
+            "transaction_id": str(updated_transaction.id),
+            "invoice_id": updated_transaction.invoice_id,
+            "status": updated_transaction.status,
+            "charged_amount": str(charge_amount if charge_amount is not None else updated_transaction.amount),
+            "remaining_authorized_balance": remaining_authorized_balance
+        }), 200
+
+    except Exception as e:
+        current_app.logger.error(f"Ошибка при списании средств для транзакции {transaction_id}: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 400

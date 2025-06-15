@@ -1,8 +1,11 @@
 import uuid
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy import func
+from sqlalchemy import func, and_
 from app.models.transaction import Transaction
 from app.models.account_balance import AccountBalance
+from datetime import datetime, timezone
+from sqlalchemy.orm.session import Session
+import decimal
 
 
 def create_transaction(db_session, validated_data, cryptogram_data):
@@ -78,3 +81,65 @@ def create_transaction(db_session, validated_data, cryptogram_data):
     db_session.refresh(new_transaction)
 
     return new_transaction
+
+
+def charge_transaction(db_session: Session, transaction_id: uuid.UUID, charge_amount: float = None):
+    """
+    Списывает (подтверждает) средства для авторизованной транзакции.
+    Если charge_amount не указан, списывается полная авторизованная сумма транзакции.
+
+    Аргументы:
+        db_session: Сессия базы данных.
+        transaction_id: UUID транзакции, которая должна быть списана.
+        charge_amount: Опциональная сумма для списания. Если None, списывается вся авторизованная сумма.
+    """
+    try:
+        transaction = db_session.query(Transaction).filter_by(id=transaction_id).first()
+
+        if not transaction:
+            raise Exception(f"Транзакция с ID {transaction_id} не найдена.")
+
+        if transaction.status != "AUTH":
+            raise Exception(
+                f"Транзакция ID {transaction_id} находится в статусе '{transaction.status}', ожидается 'AUTH'.")
+
+        amount_to_charge = transaction.amount if charge_amount is None else charge_amount
+
+        amount_to_charge = decimal.Decimal(str(amount_to_charge)).quantize(decimal.Decimal('0.01'))
+
+        if amount_to_charge <= 0:
+            raise Exception("Сумма списания должна быть положительной.")
+
+        if amount_to_charge > transaction.amount:
+            raise Exception(
+                f"Запрошенная сумма {amount_to_charge} {transaction.currency} превышает авторизованную сумму {transaction.amount} {transaction.currency} для транзакции ID {transaction_id}."
+            )
+
+        transaction.status = "CONFIRMED"
+        transaction.updated_at = datetime.now(timezone.utc)
+
+        db_session.query(AccountBalance).filter(AccountBalance.account_id == transaction.account_id).update(
+            {
+                AccountBalance.authorized_balance: AccountBalance.authorized_balance - amount_to_charge,
+                AccountBalance.updated_at: func.now()
+            },
+            synchronize_session='fetch'
+        )
+
+        db_session.execute(
+            AccountBalance.__table__.update().
+            where(and_(
+                AccountBalance.account_id == transaction.account_id,
+                AccountBalance.authorized_balance < 0
+            )).
+            values(authorized_balance=0, updated_at=func.now())
+        )
+
+        db_session.commit()
+        db_session.refresh(transaction)
+
+        return transaction
+
+    except Exception as e:
+        db_session.rollback()
+        raise Exception(f"Ошибка списания средств: {e}")
