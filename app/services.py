@@ -1,7 +1,8 @@
-from app.models import Transaction, AccountBalance
 import uuid
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy import func
+from app.models.transaction import Transaction
+from app.models.account_balance import AccountBalance
 
 
 def create_transaction(db_session, validated_data, cryptogram_data):

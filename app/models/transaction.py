@@ -1,10 +1,7 @@
+from sqlalchemy import Column, String, DateTime, UUID, Boolean, DECIMAL, Text
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy.sql import func
-from sqlalchemy import Column, String, DECIMAL, DateTime, Boolean, UUID, Text
-from sqlalchemy.ext.declarative import declarative_base
-
-Base = declarative_base()
+from .base import Base
 
 
 class Transaction(Base):
@@ -43,15 +40,3 @@ class Transaction(Base):
 
     def __repr__(self):
         return f"<Transaction(id='{self.id}', invoice_id='{self.invoice_id}', amount={self.amount}, status='{self.status}')>"
-
-
-class AccountBalance(Base):
-    __tablename__ = 'account_balances'
-    account_id = Column(UUID(as_uuid=True), primary_key=True, default=lambda: uuid.uuid4())
-    authorized_balance = Column(DECIMAL(10, 2), default=0.00, nullable=False)
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
-
-    def __repr__(self):
-        return f"<AccountBalance {self.account_id} | Authorized: {self.authorized_balance}>"
-
-
