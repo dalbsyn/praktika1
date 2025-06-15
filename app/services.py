@@ -143,3 +143,57 @@ def charge_transaction(db_session: Session, transaction_id: uuid.UUID, charge_am
     except Exception as e:
         db_session.rollback()
         raise Exception(f"Ошибка списания средств: {e}")
+
+
+def cancel_transaction(db_session: Session, transaction_id: uuid.UUID):
+    """
+    Отмена оплаты.
+    Передаваемая транзакция должна находиться строго в состоянии AUTH.
+
+    :param db_session: сессия базы данных
+    :param transaction_id: идентификатор транзакции
+    :return: json-ответ
+    """
+    try:
+        transaction = db_session.query(Transaction).filter_by(id=transaction_id).first()
+
+        if not transaction:
+            raise Exception(f"Транзакция с ID {transaction_id} не найдена.")
+
+        # Проверка транзакции на соответствие состоянию AUTH
+        if transaction.status != "AUTH":
+            raise Exception(
+                f"Транзакция ID {transaction_id} находится в статусе '{transaction.status}', ожидается 'AUTH' для отмены.")
+
+        # Обновление состоянис транзакции на CANCELLED
+        transaction.status = "CANCELED"
+        transaction.updated_at = datetime.now(timezone.utc)
+
+        # Снятие с удержания уже закрытых средств
+        amount_to_release = transaction.amount
+
+        db_session.query(AccountBalance).filter(AccountBalance.account_id == transaction.account_id).update(
+            {
+                AccountBalance.authorized_balance: AccountBalance.authorized_balance - amount_to_release,
+                AccountBalance.updated_at: func.now()
+            },
+            synchronize_session='fetch'
+        )
+
+        # Если по какой-то причине сумма аккаунта окажется ниже 0, то пусть будет 0
+        db_session.execute(
+            AccountBalance.__table__.update().
+            where(and_(
+                AccountBalance.account_id == transaction.account_id,
+                AccountBalance.authorized_balance < 0
+            )).
+            values(authorized_balance=0, updated_at=func.now())
+        )
+
+        db_session.commit()
+        db_session.refresh(transaction)
+        return transaction
+
+    except Exception as e:
+        db_session.rollback()
+        raise Exception(f"Ошибка при отмене транзакции: {e}")

@@ -2,7 +2,7 @@ from flask import Blueprint, request, jsonify, current_app
 from sqlalchemy.orm import Session
 from app.schemas import CryptopayRequestSchema, CryptogramSchema
 from app.services import (
-    create_transaction, charge_transaction,
+    create_transaction, charge_transaction, cancel_transaction
 )
 from marshmallow import ValidationError, fields
 import json
@@ -221,5 +221,19 @@ def charge_operation(transaction_id: uuid.UUID):
         }), 200
 
     except Exception as e:
-        current_app.logger.error(f"Ошибка при списании средств для транзакции {transaction_id}: {e}", exc_info=True)
+        # Заглушка ошибки для соответсвия таковму из EPAY
         return jsonify({"error": str(e)}), 400
+
+
+@payment_bp.route('/<uuid:transaction_id>/cancel', methods=['POST'])
+def cancel_operation(transaction_id: uuid.UUID):
+    db_session: Session = current_app.extensions['sqlalchemy_session']()
+
+    try:
+        # Выполнение отмены платежа
+        updated_transaction = cancel_transaction(db_session, transaction_id)
+        return "", 200
+
+    except Exception as e:
+        # Заглушка ошибки для соответсвия таковму из EPAY
+        return jsonify({"code": 100, "message": str(e)}), 400
