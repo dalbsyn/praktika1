@@ -10,8 +10,10 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
      - "${POSTGRES_PORT}:${POSTGRES_PORT}"
-    volumes:
-      - db_data:/var/lib/postgresql/data
+    # Если нужна постоянная база данных - раскомментировать. Постоянная база данных мешает делать тесты с одними и теми
+    # значениями в запросе
+    # volumes:
+      # - db_data:/var/lib/postgresql/data
 
   redis:
     image: docker.io/redis:latest
