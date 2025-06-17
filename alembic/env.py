@@ -28,7 +28,7 @@ from app import config
 target_metadata = Base.metadata
 
 # В данном случае требуется создавать URL относительно контейнера.
-url = config.build_url(True)
+url = config.DATABASE_URL
 # ... etc.
 
 
