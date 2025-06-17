@@ -45,7 +45,6 @@ def run_migrations_offline() -> None:
 
     """
     # url = config.get_main_option("sqlalchemy.url")
-    url = config.build_url(True)
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -66,7 +65,7 @@ def run_migrations_online() -> None:
     """
     connectable = engine_from_config(
         # config.get_section(config.config_ini_section, {}),
-        {'sqlalchemy.url': config.build_url(True)},
+        {'sqlalchemy.url': url},
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
