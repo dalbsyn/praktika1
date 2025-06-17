@@ -3,6 +3,18 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def _build_container_url():
+    user = os.getenv('POSTGRES_USER')
+    # host = название контейнера с PostgreSQL
+    host = 'db'
+    port = os.getenv('POSTGRES_PORT')
+    database = os.getenv('POSTGRES_DB')
+    password = os.getenv('POSTGRES_PASSWORD')
+    result = f'postgresql+psycopg://{user}:{password}@{host}:{port}/{database}'
+    return result
+
+
 """
 Настройки самого приложения
 """
@@ -14,6 +26,7 @@ _3DS_OTP_CODE = "123456"
 VALIDATION_REQUIRE_TLD_FOR_URLS = False
 
 DATABASE_URL = os.getenv('DATABASE_URL')
+_CONTAINER_DB_URL = _build_container_url()
 
 # Коды ошибок Epay
 EPAY_ERROR_CODES = {
@@ -155,4 +168,3 @@ ERROR_CARD_NUMBERS = {
         "refund": 0
     }
 }
-
