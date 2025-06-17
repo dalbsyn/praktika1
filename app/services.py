@@ -7,6 +7,9 @@ from datetime import datetime, timezone
 from sqlalchemy.orm.session import Session
 import decimal
 from typing import Optional
+from flask import current_app
+from app.exceptions import CardError
+
 
 def _update_account_balance_and_commit(db_session: Session, transaction: Transaction, amount_change: decimal.Decimal):
     """
@@ -25,7 +28,7 @@ def _update_account_balance_and_commit(db_session: Session, transaction: Transac
             AccountBalance.authorized_balance: AccountBalance.authorized_balance - amount_change,
             AccountBalance.updated_at: func.now()
         },
-        synchronize_session='fetch' # Важно для корректного обновления в рамках сессии
+        synchronize_session='fetch'  # Важно для корректного обновления в рамках сессии
     )
 
     # Проверка на то, чтобы authorized_balance не уходил в минус. Если уходит, то будет 0.
@@ -43,25 +46,56 @@ def _update_account_balance_and_commit(db_session: Session, transaction: Transac
 
     return transaction
 
+
+def _check_and_raise_error(transaction: Transaction, operation_type: str):
+    """
+    Функция для проверки карты в списке таковых с ошибками.
+
+    :param transaction: Идентификатор транзакции
+    :param operation_type: тип операции
+    :return: CardError
+    """
+    hpan_to_check = transaction.hpan
+    current_app.logger.debug(f"DEBUG (check_and_raise_epay_error): HPAN из транзакции для проверки: {hpan_to_check}")
+
+    error_config_for_card = current_app.config['ERROR_CARD_NUMBERS'].get(hpan_to_check)
+    current_app.logger.debug(
+        f"DEBUG (check_and_raise_epay_error): Конфигурация ошибок для этой карты: {error_config_for_card}")
+
+    if error_config_for_card is not None:
+        error_code_key_for_op = error_config_for_card.get(operation_type) or error_config_for_card.get('default')
+
+        if error_code_key_for_op is not None and error_code_key_for_op != 0:
+            error_message = current_app.config['EPAY_ERROR_CODES'].get(error_code_key_for_op, "Неизвестная ошибка.")
+            current_app.logger.debug(
+                f"DEBUG (check_and_raise_epay_error): Обнаружена ошибка симуляции: {error_code_key_for_op} - {error_message}")
+            raise CardError(
+                code=error_code_key_for_op,
+                message=error_message,
+            )
+
+
 def create_transaction(db_session, validated_data, cryptogram_data):
     """
-    Создает новую транзакцию со статусом AUTH и соответствующим образом
-    обновляет AccountBalance.
+    Операция платежа, которая ставит средства на удержание
+
+    :param db_session: сессия базы данных
+    :param validated_data: уже обработанные данные валидатором
+    :param cryptogram_data: данные криптограммы
+    :return: json-ответ
     """
 
-    # Генерация int_reference (теперь String(255))
+    # Генерация int_reference
     int_reference = str(uuid.uuid4()).replace('-',
-                                              '')  # Убираем '-' для соответствия string-представлению, но длина важна
-    if len(int_reference) > 255:  # Убедимся, что не превышаем длину
-        int_reference = int_reference[:255]
+                                              '')
 
     # Генерация approval_code (String(6))
     approval_code = str(uuid.uuid4().int)[:6]
 
-    # Генерация card_id (UUID) - schema уже даст нам объект UUID, но если его нет, генерируем
-    card_id = validated_data.get('cardId', uuid.uuid4())  # cardId теперь может приходить из запроса или генерироваться
+    # Генерация card_id, если card_id отсутствует
+    card_id = validated_data.get('cardId', uuid.uuid4())
 
-    # Status (String(50))
+    # Статус транзакции
     transaction_status = "AUTH"
 
     # Создание новой записи транзакции
@@ -86,7 +120,7 @@ def create_transaction(db_session, validated_data, cryptogram_data):
         cvc=cryptogram_data.get('cvc'),
         terminal_id=cryptogram_data.get('terminalId', uuid.uuid4()),
 
-        # Сгенерированные или фиксированные эмулятором поля
+        # Сгенерированные или фиксированные поля
         int_reference=int_reference,
         approval_code=approval_code,
         card_id=card_id,
@@ -119,21 +153,24 @@ def create_transaction(db_session, validated_data, cryptogram_data):
 def charge_transaction(db_session: Session, transaction_id: uuid.UUID, charge_amount: float = None):
     """
     Списывает (подтверждает) средства для авторизованной транзакции.
-    Если charge_amount не указан, списывается полная авторизованная сумма транзакци
+    Если charge_amount не указан, списывается полная авторизованная сумма транзакции
 
-    :param db_session: сессия базы данных
+    :param db_session: Сессия базы данных
     :param transaction_id: UUID транзакции, которая должна быть списана
     :param charge_amount: опциональная сумма для списания. Если None, списывается вся авторизованная сумма.
-    :return:
+    :return: json-ответ
     """
 
-    # Тут костыль из-за Pycharm для явного обозначения того, что возвращщается именно Transacton
+    # Тут костыль из-за Pycharm для явного обозначения того, что возвращается именно Transaction
     try:
         transaction: Optional[Transaction] = db_session.query(Transaction).filter_by(id=transaction_id).first()
 
         if not transaction:
             raise Exception(f"Транзакция с ID {transaction_id} не найдена.")
 
+        _check_and_raise_error(transaction, 'charge')
+
+        # Ошибка, если у указанной транзакции статус не AUTH
         if transaction.status != "AUTH":
             raise Exception(
                 f"Транзакция ID {transaction_id} находится в статусе '{transaction.status}', ожидается 'AUTH'.")
@@ -141,6 +178,7 @@ def charge_transaction(db_session: Session, transaction_id: uuid.UUID, charge_am
         amount_to_charge = transaction.amount if charge_amount is None else charge_amount
         amount_to_charge = decimal.Decimal(str(amount_to_charge)).quantize(decimal.Decimal('0.01'))
 
+        # Проверка на то, что сумма списания либо не отрицательная, либо не слишком огромная
         if amount_to_charge <= 0:
             raise Exception("Сумма списания должна быть положительной.")
         if amount_to_charge > transaction.amount:
@@ -148,6 +186,7 @@ def charge_transaction(db_session: Session, transaction_id: uuid.UUID, charge_am
                 f"Запрошенная сумма {amount_to_charge} {transaction.currency} превышает авторизованную сумму {transaction.amount} {transaction.currency} для транзакции ID {transaction_id}."
             )
 
+        # Статус транзакции становится CHARGE
         transaction.status = "CHARGE"
         transaction.updated_at = datetime.now(timezone.utc)
 
@@ -155,6 +194,9 @@ def charge_transaction(db_session: Session, transaction_id: uuid.UUID, charge_am
 
         return final_transaction
 
+    except CardError as ee:
+        db_session.rollback()
+        raise ee
     except Exception as e:
         db_session.rollback()
         raise Exception(f"Ошибка списания средств: {e}")
@@ -165,23 +207,26 @@ def cancel_transaction(db_session: Session, transaction_id: uuid.UUID):
     Отмена оплаты.
     Передаваемая транзакция должна находиться строго в состоянии AUTH.
 
-    :param db_session: сессия базы данных
+    :param db_session: Сессия базы данных
     :param transaction_id: идентификатор транзакции
     :return: json-ответ
     """
 
-    # Тут костыль из-за Pycharm для явного обозначения того, что возвращщается именно Transacton
+    # Тут костыль из-за Pycharm для явного обозначения того, что возвращается именно Transaction
     try:
         transaction: Optional[Transaction] = db_session.query(Transaction).filter_by(id=transaction_id).first()
 
         if not transaction:
             raise Exception(f"Транзакция с ID {transaction_id} не найдена.")
 
+        _check_and_raise_error(transaction, 'cancel')
+
         if transaction.status != "AUTH":
             raise Exception(
                 f"Транзакция ID {transaction_id} находится в статусе '{transaction.status}', ожидается 'AUTH' для отмены.")
 
-        transaction.status = "CANCELED"
+        # Статус транзакции становится CANCEL
+        transaction.status = "CANCEL"
         transaction.updated_at = datetime.now(timezone.utc)
 
         amount_to_release = transaction.amount
@@ -190,6 +235,9 @@ def cancel_transaction(db_session: Session, transaction_id: uuid.UUID):
 
         return final_transaction
 
+    except CardError as ee:
+        db_session.rollback()
+        raise ee
     except Exception as e:
         db_session.rollback()
         raise Exception(f"Ошибка при отмене транзакции: {e}")
@@ -203,23 +251,23 @@ def refund_transaction(db_session: Session, transaction_id: uuid.UUID, refund_am
     Возвращаемые средства вернутся на какой-то счет пользователя, а не в удерживаемую сумму (которая хранится в базе
     данных). В базе данных счета пользователей не хранятся, так как не нужно. Средства возвращаются в никуда.
 
-    :param db_session: сессия базы данных
+    :param db_session: Сессия базы данных
     :param transaction_id: идентификатор транзакции
     :param refund_amount: опциональный - количество средств для возврата
     :param external_id: идентификатор коммерсанта
     :return: json-ответ
     """
     try:
-        transaction = db_session.query(Transaction).filter_by(id=transaction_id).first()
+        transaction: Optional[Transaction] = db_session.query(Transaction).filter_by(id=transaction_id).first()
 
-        if not transaction:
-            raise Exception(f"Транзакция с ID {transaction_id} не найдена.")
+        _check_and_raise_error(transaction, 'refund')
 
         # Проверка транзакции на соответствие статусу CHARGE
         if transaction.status != "CHARGE":
             raise Exception(
                 f"Транзакция ID {transaction_id} находится в статусе '{transaction.status}', ожидается 'CHARGE' для возврата.")
 
+        # Проверка на то, что есть параметр external_id
         if not external_id or not isinstance(external_id, str) or len(external_id) != 22:
             raise Exception("Параметр 'externalID' является обязательным и должен быть строкой длиной 22 символа.")
 
@@ -237,8 +285,8 @@ def refund_transaction(db_session: Session, transaction_id: uuid.UUID, refund_am
                 f"Запрошенная сумма возврата {amount_to_refund} {transaction.currency} превышает общую сумму транзакции {transaction.amount} {transaction.currency} для транзакции ID {transaction_id}."
             )
 
-        # Обновляем статус транзакции на REFUNDED
-        transaction.status = "REFUNDED"
+        # Статус транзакции становится REFUND
+        transaction.status = "REFUND"
         transaction.updated_at = datetime.now(timezone.utc)
 
         db_session.commit()
@@ -246,6 +294,9 @@ def refund_transaction(db_session: Session, transaction_id: uuid.UUID, refund_am
 
         return transaction
 
+    except CardError as ee:
+        db_session.rollback()
+        raise ee
     except Exception as e:
-        db_session.rollback()  # Откатываем изменения при любой ошибке
+        db_session.rollback()
         raise Exception(f"Ошибка при возврате средств: {e}")

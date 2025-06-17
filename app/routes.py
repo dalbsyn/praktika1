@@ -4,20 +4,15 @@ from app.schemas import CryptopayRequestSchema, CryptogramSchema
 from app.services import (
     create_transaction, charge_transaction, cancel_transaction, refund_transaction
 )
-from marshmallow import ValidationError, fields
+from marshmallow import ValidationError
 import json
 import uuid
 import decimal
-
-from app.models.account_balance import AccountBalance
+from app.exceptions import CardError
 
 # Инициализация Blueprint
 main_bp = Blueprint('main', __name__)
 payment_bp = Blueprint('payment', __name__, url_prefix='/api/payment')
-
-class ChargeRequestSchema(CryptopayRequestSchema):
-    amount = fields.Decimal(required=False, as_string=False, places=2, load_default=None,
-                            metadata={'description': 'Сумма для списания. Если не указана, списывается вся сумма транзакции.'})
 
 # Инициализация схем валидации
 cryptopay_request_schema = CryptopayRequestSchema()
@@ -82,7 +77,7 @@ def cryptopay():
         try:
             cryptogram_str = validated_data['cryptogram']
             cryptogram_data = cryptogram_schema.loads(cryptogram_str)
-            hpan = cryptogram_data['hpan']  # Получаем hpan из криптограммы
+            hpan = cryptogram_data['hpan']
             cryptogram_data.get('cvc')
             cryptogram_data.get('terminalId')
         except (json.JSONDecodeError, ValidationError) as err:
@@ -93,7 +88,7 @@ def cryptopay():
                 "id": "", "reference": "", "accountId": validated_data.get('accountId')
             }), 400
 
-        # Считывание data, если оно есть
+        # Считывание data на то, что он является JSON
         if data_str:
             try:
                 json.loads(data_str)
@@ -105,30 +100,70 @@ def cryptopay():
                 }), 400
 
         # Проверка номера карты на его наличие в списке таковых с ошибками
-        error_code_key_for_card = None
-        # Проверяем, есть ли hpan в наших "ошибочных" номерах
-        if hpan in current_app.config['ERROR_CARD_NUMBERS']:
-            error_code_key_for_card = current_app.config['ERROR_CARD_NUMBERS'][hpan]
+        error_config_for_card = current_app.config['ERROR_CARD_NUMBERS'].get(hpan)
 
-        if error_code_key_for_card is not None:
-            # Получаем код и сообщение об ошибке из EPAY_ERROR_CODES
-            error_code = error_code_key_for_card
-            error_message = current_app.config['EPAY_ERROR_CODES'].get(error_code_key_for_card)
+        if error_config_for_card is not None:
+            # Попытка найти ошибку для операции 'auth', если нет - 'default'
+            error_code_key_for_card = error_config_for_card.get('auth') or error_config_for_card.get('default')
 
-            # Если код не найден, используем общий, но это маловероятно, если EPAY_ERROR_CODES настроен верно.
-            if error_code is None:
-                error_code = current_app.config['EPAY_ERROR_CODES'].get("general_system_error", 9999)
-                error_message = "Transaction failed: Unknown error code for card."
+            if error_code_key_for_card is not None:
+                error_code = error_code_key_for_card
+                error_message = current_app.config['EPAY_ERROR_CODES'].get(error_code_key_for_card,
+                                                                           "Неизвестная ошибка.")
 
-            # Возвращаем ошибку без сохранения в БД
-            return jsonify({
-                "code": error_code,
-                "message": error_message,
-                "invoiceId": validated_data['invoiceId'],
-                "id": str(uuid.uuid4()),  # Генерируем новый ID для ответа об ошибке
-                "reference": "",
-                "accountId": validated_data.get('accountId')
-            }), 400
+                # Если код 0 (успех), возвращаем 200, иначе 400
+                status_code = 200 if error_code == 0 else 400
+
+                # Если это не успех, генерируем новый ID транзакции для ответа об ошибке
+                response_id = str(uuid.uuid4()) if error_code != 0 else ""
+
+                # Специальная обработка для успеха, чтобы эмулятор выдал success-поля
+                if error_code == 0:
+                    # Создаем успешную транзакцию, если карта настроена на успех
+                    new_transaction = create_transaction(db_session, validated_data, cryptogram_data)
+                    response_id = str(new_transaction.id)
+                    # Формируем успешный ответ, как будто транзакция прошла
+                    return jsonify({
+                        "id": response_id,
+                        "accountId": validated_data.get('accountId', ''),
+                        "amount": float(new_transaction.amount),
+                        "amountBonus": 0,
+                        "currency": new_transaction.currency,
+                        "description": new_transaction.description,
+                        "email": new_transaction.email,
+                        "invoiceID": new_transaction.invoice_id,
+                        "language": "rus",
+                        "phone": new_transaction.phone,
+                        "reference": new_transaction.reference,
+                        "intReference": new_transaction.int_reference,
+                        "secure3D": None,
+                        "cardID": new_transaction.card_id,
+                        "fee": 0,
+                        "approvalCode": new_transaction.approval_code,
+                        "code": 0,
+                        "status": new_transaction.status,
+                        "secureDetails": "",
+                        "qrReference": "",
+                        "ip": request.remote_addr or "127.0.0.1",
+                        "ipCity": "",
+                        "ipCountry": "",
+                        "ipDistrict": "",
+                        "ipLatitude": 0,
+                        "ipLongitude": 0,
+                        "ipRegion": "",
+                        "issuerBankCountry": "KAZ",
+                        "isCredit": False
+                    }), 200
+                else:
+                    # Возвращаем ошибку, если карта настроена на ошибку
+                    return jsonify({
+                        "code": error_code,
+                        "message": error_message,
+                        "invoiceId": validated_data['invoiceId'],
+                        "id": response_id,
+                        "reference": "",
+                        "accountId": validated_data.get('accountId')
+                    }), status_code
 
         new_transaction = create_transaction(db_session, validated_data, cryptogram_data)
 
@@ -167,12 +202,8 @@ def cryptopay():
         return jsonify(response_data), 200
 
     except Exception as e:
-        return jsonify({
-            "code": 500,
-            "message": f"Internal Server Error: {str(e)}",
-            "id": "",
-            "reference": "",
-            "accountId": ""
+        # Другая ошибка
+        return jsonify({"code": 999, "message": f"Internal Server Error: {str(e)}",
         }), 500
 
 
@@ -207,17 +238,21 @@ def charge_operation(transaction_id: uuid.UUID):
             except (ValueError, decimal.InvalidOperation):
                 return jsonify({"error": "Некорректный формат суммы."}), 400
 
-        updated_transaction = charge_transaction(db_session, transaction_id, charge_amount)
-
-        account_balance_record = db_session.query(AccountBalance).filter_by(
-            account_id=updated_transaction.account_id).first()
-        remaining_authorized_balance = str(account_balance_record.authorized_balance) if account_balance_record else "0.00"
+        charge_transaction(db_session, transaction_id, charge_amount)
 
         return jsonify({
         }), 200
+
+    except CardError as ee:
+        return jsonify({
+            "code": ee.code,
+            "message": ee.message,
+        }), 400
+
     except Exception as e:
-        # Заглушка ошибки для соответсвия таковму из EPAY
-        return jsonify({"error": str(e)}), 400
+        # Другая ошибка
+        return jsonify({"code": 999, "message": str(e)}), 500
+
 
 @payment_bp.route('/<uuid:transaction_id>/cancel', methods=['POST'])
 def cancel_operation(transaction_id: uuid.UUID):
@@ -228,9 +263,12 @@ def cancel_operation(transaction_id: uuid.UUID):
         cancel_transaction(db_session, transaction_id)
         return "", 200
 
-    except Exception as e:
-        # Заглушка ошибки для соответсвия таковму из EPAY
-        return jsonify({"code": 100, "message": str(e)}), 400
+    except CardError as ee:
+        current_app.logger.warning(f"Ошибка Epay при отмене для транзакции {transaction_id}: {ee.message}")
+        return jsonify({
+            "code": ee.code,
+            "message": ee.message,
+        }), 400
 
 
 @payment_bp.route('/<uuid:transaction_id>/refund', methods=['POST'])
@@ -240,16 +278,12 @@ def refund_operation(transaction_id: uuid.UUID):
     try:
         # Получение данных из JSON-запроса. Если JSON нет, то считывание из URL
         request_data_json = request.get_json(silent=True)
-
-        external_id = None
         refund_amount = None
 
         # JSON или параметры URL
         if request_data_json:
-            current_app.logger.debug(f"Получены данные из JSON для refund: {request_data_json}")
             data_source = request_data_json
         else:  # Нет JSON-данных, пробуем параметры URL
-            current_app.logger.debug(f"Получены данные из URL args для refund: {request.args}")
             data_source = request.args
 
         # Получение externalID
@@ -268,11 +302,16 @@ def refund_operation(transaction_id: uuid.UUID):
         if not isinstance(external_id, str) or len(external_id) != 22:
             raise Exception("Параметр 'externalID' должен быть строкой длиной 22 символа.")
 
-        updated_transaction = refund_transaction(db_session, transaction_id, refund_amount, external_id)
+        refund_transaction(db_session, transaction_id, refund_amount, external_id)
 
         return "", 200
 
+    except CardError as ee:
+        return jsonify({
+            "code": ee.code,
+            "message": ee.message,
+        }), 400
+
     except Exception as e:
-        current_app.logger.error(f"Ошибка при возврате средств для транзакции {transaction_id}: {e}", exc_info=True)
-        # Заглушка ошибки для соответсвия таковму из EPAY
-        return jsonify({"code": 100, "message": str(e)}), 400
+        # Другая ошибка
+        return jsonify({"code": 999, "message": str(e)}), 400
